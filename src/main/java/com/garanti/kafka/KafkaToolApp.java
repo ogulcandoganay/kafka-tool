@@ -17,6 +17,9 @@ public class KafkaToolApp extends JFrame {
     private JTextField truststoreLocationField;
     private JPasswordField truststorePasswordField;
 
+    private JComboBox<String> offsetResetPolicyComboBox;
+    private JTextField customOffsetField;
+
     private JTable messageTable;
     private DefaultTableModel tableModel;
     private JTextArea statusArea;
@@ -135,8 +138,29 @@ public class KafkaToolApp extends JFrame {
         JPanel controlPanel = new JPanel(new BorderLayout(5, 5));
         controlPanel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
 
+        // Tüketici Kontrol Paneli
         JPanel consumerPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         consumerPanel.setBorder(BorderFactory.createTitledBorder("Consumer"));
+
+        // Offset Kontrolü Elemanları
+        String[] resetPolicies = {"Son Kalınan Yere Git (Latest)", "En Baştan Başla (Earliest)", "Özel Offsetten Başla (Custom Seek)"};
+        offsetResetPolicyComboBox = new JComboBox<>(resetPolicies);
+        offsetResetPolicyComboBox.setSelectedIndex(0); // Varsayılan: Latest
+
+        customOffsetField = new JTextField("0", 10);
+        customOffsetField.setToolTipText("Başlangıç offset numarasını girin");
+        customOffsetField.setEnabled(false); // Başlangıçta devre dışı
+
+        // Custom Seek seçildiğinde text field'ı aktif etme listener'ı
+        offsetResetPolicyComboBox.addActionListener(e -> {
+            customOffsetField.setEnabled(offsetResetPolicyComboBox.getSelectedIndex() == 2);
+        });
+
+        consumerPanel.add(new JLabel("Başla:"));
+        consumerPanel.add(offsetResetPolicyComboBox);
+        consumerPanel.add(new JLabel(" Offset Numarası:"));
+        consumerPanel.add(customOffsetField);
+
 
         startConsumerBtn = new JButton("▶ Consume Başlat");
         startConsumerBtn.setBackground(new Color(76, 175, 80));
@@ -154,6 +178,7 @@ public class KafkaToolApp extends JFrame {
         consumerPanel.add(startConsumerBtn);
         consumerPanel.add(stopConsumerBtn);
 
+        // ... Producer Panel code remains the same ...
         JPanel producerPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         producerPanel.setBorder(BorderFactory.createTitledBorder("Producer"));
 
@@ -211,13 +236,44 @@ public class KafkaToolApp extends JFrame {
 
         String bootstrapServers = bootstrapServerField.getText().trim();
         String topic = topicField.getText().trim();
-        String groupId = groupIdField.getText().trim();
+        String groupId = groupIdField.getText().trim(); // Kullanıcının girdiği Group ID
         boolean useKerberos = kerberosCheckBox.isSelected();
 
         String truststoreLocation = truststoreLocationField.getText().trim();
         String truststorePassword = new String(truststorePasswordField.getPassword()).trim();
 
+        String offsetPolicy = (String) offsetResetPolicyComboBox.getSelectedItem();
+        long customOffset = 0;
+
+        // YENI MANTIK: Custom Seek veya Earliest seçiliyse, Group ID'yi benzersizleştir.
+        if (offsetPolicy.equals("Özel Offsetten Başla (Custom Seek)") || offsetPolicy.equals("En Baştan Başla (Earliest)")) {
+            // Group ID'nin sonuna benzersiz bir zaman damgası ekle
+            String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HHmmssSSS"));
+
+            // Eğer Group ID çok uzunsa, Kafka limitlerini aşmamak için kırp
+            String baseGroupId = groupId.length() > 50 ? groupId.substring(0, 50) : groupId;
+
+            groupId = baseGroupId + "-test-" + timestamp;
+            appendStatus(String.format("[BİLGİ] Otomatik Group ID: %s (%s için)\n", groupId, offsetPolicy));
+        }
+
+
+        if (offsetPolicy.equals("Özel Offsetten Başla (Custom Seek)")) {
+            try {
+                customOffset = Long.parseLong(customOffsetField.getText().trim());
+                if (customOffset < 0) {
+                    throw new NumberFormatException(); // Offset negatif olamaz
+                }
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(this,
+                        "Özel Offset geçerli ve pozitif bir sayı olmalıdır!",
+                        "Hata", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+        }
+
         if (bootstrapServers.isEmpty() || topic.isEmpty()) {
+            // ... (Hata kontrolü) ...
             JOptionPane.showMessageDialog(this,
                     "Bootstrap servers ve topic alanları doldurulmalı!",
                     "Hata", JOptionPane.ERROR_MESSAGE);
@@ -225,21 +281,23 @@ public class KafkaToolApp extends JFrame {
         }
 
         if (useKerberos && (truststoreLocation.isEmpty() || truststorePassword.isEmpty())) {
+            // ... (Hata kontrolü) ...
             JOptionPane.showMessageDialog(this,
                     "Kerberos/SSL seçili. Truststore Yolu ve Şifresi zorunludur!",
                     "Güvenlik Hatası", JOptionPane.ERROR_MESSAGE);
             return;
         }
 
+        // Config nesnesini oluştururken DİNAMİK Group ID'yi kullan
         KafkaConfig config = new KafkaConfig(
                 bootstrapServers,
-                groupId,
+                groupId, // BURADA DİNAMİK GROUP ID KULLANILIYOR
                 useKerberos,
                 truststoreLocation,
                 truststorePassword
         );
 
-        consumerService.start(config, topic);
+        consumerService.start(config, topic, offsetPolicy, customOffset);
         producerService.initialize(config);
 
         startConsumerBtn.setEnabled(false);
@@ -324,7 +382,6 @@ public class KafkaToolApp extends JFrame {
         return LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
     }
 
-    // 🔴 DÜZELTME: Kayıp metot eklendi!
     private void clearOutput() {
         SwingUtilities.invokeLater(() -> {
             tableModel.setRowCount(0);

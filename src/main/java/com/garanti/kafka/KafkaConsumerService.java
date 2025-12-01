@@ -3,18 +3,23 @@ package com.garanti.kafka;
 import com.garanti.kafka.config.KafkaConfig;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.TopicPartition;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
+import java.util.Properties;
+import java.util.Set;
 import java.util.function.Consumer;
 
 public class KafkaConsumerService {
 
+    Properties props = new Properties();
     private KafkaConsumer<String, String> consumer;
     private volatile boolean running = false;
     private Thread consumerThread;
@@ -29,14 +34,27 @@ public class KafkaConsumerService {
         this.prettyGson = new GsonBuilder().setPrettyPrinting().create();
     }
 
-    public void start(KafkaConfig config, String topic) {
+    // başla
+    public void start(KafkaConfig config, String topic, String offsetPolicy, long customOffset) {
         if (running) {
             statusCallback.accept("[HATA] Consumer zaten çalışıyor!\n");
             return;
         }
 
         try {
-            consumer = new KafkaConsumer<>(config.getConsumerProperties());
+            Properties props = config.getConsumerProperties();
+
+            // Offset Politikasını ayarla
+            if (offsetPolicy.equals("En Baştan Başla (Earliest)")) {
+                props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+            } else {
+                // Latest ve Custom Seek için 'latest' kullanmak güvenlidir
+                props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
+            }
+
+            consumer = new KafkaConsumer<>(props);
+
+            // Topic'e subscribe ol
             consumer.subscribe(Collections.singletonList(topic));
             running = true;
 
@@ -46,6 +64,37 @@ public class KafkaConsumerService {
                 statusCallback.accept("─".repeat(60) + "\n");
 
                 try {
+                    // CUSTOM SEEK IÇIN KRITIK ADIM: İlk poll çağrısı, Consumer'ın partition'ları almasını sağlar.
+                    if (offsetPolicy.equals("Özel Offsetten Başla (Custom Seek)")) {
+                        statusCallback.accept("[BİLGİ] Partition atamaları bekleniyor...\n");
+
+                        Set<TopicPartition> partitions = consumer.assignment();
+                        int denemeSayisi = 0;
+
+                        // Partition atanana kadar bekle (Maksimum 10 saniye)
+                        while (partitions.isEmpty() && denemeSayisi < 100) {
+                            consumer.poll(Duration.ofMillis(100)); // Kısa poll'lar at
+                            partitions = consumer.assignment();     // Atamayı kontrol et
+                            denemeSayisi++;
+                            try {
+                                Thread.sleep(100);
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }
+
+                        if (partitions.isEmpty()) {
+                            statusCallback.accept("[UYARI] Partition ataması yapılamadı! Seek işlemi atlanıyor.\n");
+                        } else {
+                            statusCallback.accept("Özel offsetten başlanıyor: " + customOffset + ". Atanmış " + partitions.size() + " partition bulundu.\n");
+
+                            for (TopicPartition partition : partitions) {
+                                consumer.seek(partition, customOffset);
+                                statusCallback.accept("Partition " + partition.partition() + " -> Offset " + customOffset + " ayarlandı.\n");
+                            }
+                        }
+                    }
+
                     while (running) {
                         ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(1000));
 
@@ -102,7 +151,7 @@ public class KafkaConsumerService {
 
     private void processAndAddRow(ConsumerRecord<String, String> record) {
 
-        // 💡 KRİTİK GÜVENLİK KONTROLÜ
+        // GÜVENLİK KONTROLÜ
         // Eğer mesaj değeri yoksa (boş/null) veya veri temizlenemiyorsa loga düşsün ama tabloya eklenmesin.
         if (record.value() == null || record.value().trim().isEmpty()) {
             statusCallback.accept(String.format("[UYARI] Boş mesaj atlandı. P: %d, O: %d\n",

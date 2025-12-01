@@ -30,7 +30,7 @@ public class KafkaConfig {
         props.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
+        // ConsumerConfig.AUTO_OFFSET_RESET_CONFIG artık dinamik olarak KafkaConsumerService içinde belirlenecek.
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "true");
 
         if (useKerberos) {
@@ -63,4 +63,6 @@ public class KafkaConfig {
         props.put("ssl.secure.random.implementation", "SHA1PRNG");
         props.put("sasl.kerberos.service.name", "kafka");
     }
+
+    // {"customerId" : "#i(100,1000", "transactionId" : "#s(10)", "status" : "#b()"}
 }
